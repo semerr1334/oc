@@ -60,13 +60,16 @@ u32 fb_color(u8 r, u8 g, u8 b)
 
 void fb_putpixel(u32 x, u32 y, u32 color)
 {
-    if (x >= fb.w || y >= fb.h)
+    u32 W = fb.w, H = fb.h, P = fb.pitch;
+    if (W == 0 || W > 8192 || H == 0 || H > 8192 || P < 16 || P > 65536)
+        return;                      /* структура повреждена — не пишем */
+    if (x >= W || y >= H)
         return;
     if (fb.bpp == 32) {
-        u32 *row = (u32 *)(fb.base + (size_t)y * fb.pitch);
+        u32 *row = (u32 *)(fb.base + (u64)y * P);
         row[x] = color;
     } else { /* 24 bpp */
-        u8 *row = fb.base + (size_t)y * fb.pitch;
+        u8 *row = fb.base + (u64)y * P;
         u8 *p = row + x * 3;
         p[0] = (u8)color;
         p[1] = (u8)(color >> 8);
@@ -76,18 +79,22 @@ void fb_putpixel(u32 x, u32 y, u32 color)
 
 void fb_fill_rect(u32 x, u32 y, u32 w, u32 h, u32 color)
 {
-    if (x >= fb.w || y >= fb.h)
+    u32 W = fb.w, H = fb.h, P = fb.pitch;
+    if (W == 0 || W > 8192 || H == 0 || H > 8192 || P < 16 || P > 65536)
         return;
-    if (x + w > fb.w) w = fb.w - x;
-    if (y + h > fb.h) h = fb.h - y;
-    for (u32 j = 0; j < h; j++) {
+    if (x >= W || y >= H || w == 0 || h == 0)
+        return;
+    /* границы — в 64 битах: переполнение не раздует цикл */
+    u64 xend = (u64)x + w;  if (xend > W) xend = W;
+    u64 yend = (u64)y + h;  if (yend > H) yend = H;
+    for (u32 yy = y; yy < (u32)yend; yy++) {
         if (fb.bpp == 32) {
-            u32 *row = (u32 *)(fb.base + (size_t)(y + j) * fb.pitch);
-            for (u32 i = 0; i < w; i++)
-                row[x + i] = color;
+            u32 *row = (u32 *)(fb.base + (u64)yy * P);
+            for (u32 xx = x; xx < (u32)xend; xx++)
+                row[xx] = color;
         } else {
-            for (u32 i = 0; i < w; i++)
-                fb_putpixel(x + i, y + j, color);
+            for (u32 xx = x; xx < (u32)xend; xx++)
+                fb_putpixel(xx, yy, color);
         }
     }
 }
@@ -120,6 +127,7 @@ void fb_draw_char(u32 x, u32 y, u32 code, u32 fg, u32 bg)
 {
     const u8 *glyph = font8x16[(u8)code];
     u32 s = fb.sc;
+    if (s < 1 || s > 4) s = 1;   /* защита от повреждения масштаба */
     for (u32 row = 0; row < FONT_H; row++) {
         u8 bits = glyph[row];
         for (u32 col = 0; col < FONT_W; col++) {

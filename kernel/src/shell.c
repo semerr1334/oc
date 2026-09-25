@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "gui.h"
 #include "console.h"
 #include "kprintf.h"
 #include "keyboard.h"
@@ -116,6 +117,7 @@ static void cmd_help(void)
         "  мелодия/song         мелодия динамиком\n"
         "  звёзды/stars [N]     заставка «Звёздное небо»\n"
         "  меню/menu            главное меню (мышь + стрелки + Enter)\n"
+        "  рабстол/desktop       графический рабочий стол (окна, мышь!)\n"
         "  файлы/ls             файлы в системе\n"
         "  тип/cat ИМЯ          показать файл (например notes.txt)\n"
         "  пуск/run ИМЯ         запустить программу (.ocp)\n"
@@ -666,6 +668,7 @@ static void run_line(char *s)
                strcmp(cmd, "vty.") == 0) {     /* «меню»/«menu» кривыми руками */
         cmd_menu();
     } else if (IS("sysdemo", "вызов")) cmd_sysdemo();
+    else if (IS("desktop", "рабстол") || IS("gui", "гуй")) gui_run();
     else if (IS("reboot", "перезагруз")) cmd_reboot();
     else if (IS("halt", "стоп")) {
         kprintf("останов. HLT.\n");

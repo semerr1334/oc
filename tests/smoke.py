@@ -415,6 +415,51 @@ def main():
     ok = pcs.run_until_serial("Игра окончена", max_insns=15_000_000)
     check("snake: выход по Esc", ok, pcs.status or pcs.serial()[-80:])
 
+    # ---- 13. графический рабочий стол (окна, иконки) ----
+    print("=== Тест 13: рабочий стол (окна, иконки, мышь) ===")
+    pg = fresh_pc()
+    pg.run_until_serial("oc>", max_insns=80_000_000)
+    pg.type_text("desktop\n")
+    ok = pg.run_until_serial("[GUI] рабочий стол готов", max_insns=30_000_000)
+    check("рабстол: графический рабочий стол запустился", ok,
+          pg.status or pg.serial()[-120:])
+    pg.type_text("1")                            # иконка «Калькулятор»
+    ok = pg.run_until_serial("[GUI] открыто: Калькулятор", max_insns=20_000_000)
+    check("рабстол: окно калькулятора открылось", ok,
+          pg.status or pg.serial()[-120:])
+    pg.type_text("2+3*4")
+    pg.type_text("\n")                           # Enter = «=»
+    ok = pg.run_until_serial("[GUI] калькулятор: = 14", max_insns=30_000_000)
+    check("калькулятор в окне: 2+3*4 = 14 (приоритет!)", ok,
+          pg.status or pg.serial()[-120:])
+    pg.queue_scancode(0x01); pg._pump()          # Esc
+    ok = pg.run_until_serial("[GUI] закрыто: Калькулятор", max_insns=15_000_000)
+    check("окно закрывается по Esc", ok, pg.status or pg.serial()[-80:])
+    pg.type_text("2")                            # «Часы»
+    ok = pg.run_until_serial("[GUI] открыто: Часы", max_insns=20_000_000)
+    check("рабстол: окно часов открылось", ok, pg.status or pg.serial()[-120:])
+    pg.queue_scancode(0x01); pg._pump()
+    ok = pg.run_until_serial("[GUI] закрыто: Часы", max_insns=15_000_000)
+    check("часы закрываются", ok, pg.status or pg.serial()[-80:])
+    pg.type_text("3")                            # «Блокнот»
+    ok = pg.run_until_serial("[GUI] открыто: Блокнот", max_insns=20_000_000)
+    check("рабстол: блокнот открылся", ok, pg.status or pg.serial()[-120:])
+    pg.type_text("abc")
+    ok = pg.run_until_serial("[GUI] блокнот: символов 3", max_insns=25_000_000)
+    check("блокнот: печатает текст", ok, pg.status or pg.serial()[-120:])
+    pg.queue_scancode(0x01); pg._pump()
+    ok = pg.run_until_serial("[GUI] закрыто: Блокнот", max_insns=15_000_000)
+    check("блокнот закрылся", ok, pg.status or pg.serial()[-80:])
+    pg.type_text("4")                            # «О системе»
+    ok = pg.run_until_serial("[GUI] открыто: О системе", max_insns=20_000_000)
+    check("рабстол: окно «О системе» открылось", ok, pg.status or pg.serial()[-120:])
+    pg.queue_scancode(0x01); pg._pump()
+    ok = pg.run_until_serial("[GUI] закрыто: О системе", max_insns=15_000_000)
+    check("«О системе» закрылось", ok, pg.status or pg.serial()[-80:])
+    pg.queue_scancode(0x01); pg._pump()          # Esc на пустом столе — выход
+    ok = pg.run_until_serial("[GUI] выход в шелл", max_insns=15_000_000)
+    check("рабстол: выход в шелл по Esc", ok, pg.status or pg.serial()[-80:])
+
     print(f"\nИтог: {passed} OK, {failed} FAIL")
     return 1 if failed else 0
 
