@@ -30,9 +30,18 @@ def check(name, cond, detail=""):
         print(f"  [FAIL] {name} {detail}")
 
 
-def fresh_pc():
-    return PC(IMAGE, KERNEL_ELF if os.path.exists(KERNEL_ELF) else None,
-              verbose=VERBOSE)
+def fresh_pc(in_desktop=False):
+    """Свежий стенд. Система грузится СРАЗУ в рабочий стол;
+    Esc уводит его в шелл (нужно большинству тестов)."""
+    pc = PC(IMAGE, KERNEL_ELF if os.path.exists(KERNEL_ELF) else None,
+            verbose=VERBOSE)
+    if not in_desktop:
+        pc.run_until_serial("[GUI] рабочий стол готов", max_insns=80_000_000)
+        pc.queue_scancode(0x01)
+        pc.queue_scancode(0x81)
+        pc._pump()
+        pc.run_until_serial("oc>", max_insns=30_000_000)
+    return pc
 
 
 def main():
@@ -234,8 +243,8 @@ def main():
                     return True
         return False
 
-    check("латиница рисуется (глиф «D» из GDT/IDT в кадре)",
-          glyph_on_screen(0x44), "")
+    check("латиница рисуется (глиф «o» из «oc>» в кадре)",
+          glyph_on_screen(0x6F), "")
     check("кириллица рисуется (глиф «Д» из «Двухсотметровка»)",
           glyph_on_screen(0x84), "")
 
@@ -417,11 +426,9 @@ def main():
 
     # ---- 13. графический рабочий стол (окна, иконки) ----
     print("=== Тест 13: рабочий стол (окна, иконки, мышь) ===")
-    pg = fresh_pc()
-    pg.run_until_serial("oc>", max_insns=80_000_000)
-    pg.type_text("desktop\n")
-    ok = pg.run_until_serial("[GUI] рабочий стол готов", max_insns=30_000_000)
-    check("рабстол: графический рабочий стол запустился", ok,
+    pg = fresh_pc(in_desktop=True)
+    ok = pg.run_until_serial("[GUI] рабочий стол готов", max_insns=80_000_000)
+    check("система грузится СРАЗУ в рабочий стол (как Windows!)", ok,
           pg.status or pg.serial()[-120:])
     pg.type_text("1")                            # иконка «Калькулятор»
     ok = pg.run_until_serial("[GUI] открыто: Калькулятор", max_insns=20_000_000)
@@ -459,6 +466,8 @@ def main():
     pg.queue_scancode(0x01); pg._pump()          # Esc на пустом столе — выход
     ok = pg.run_until_serial("[GUI] выход в шелл", max_insns=15_000_000)
     check("рабстол: выход в шелл по Esc", ok, pg.status or pg.serial()[-80:])
+    pg.run_until_serial("oc>", max_insns=15_000_000)
+    check("после стола — снова шелл готов", True, "")
 
     print(f"\nИтог: {passed} OK, {failed} FAIL")
     return 1 if failed else 0

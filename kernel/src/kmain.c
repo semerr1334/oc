@@ -18,6 +18,7 @@
 #include "vmm.h"
 #include "heap.h"
 #include "shell.h"
+#include "gui.h"
 #include "panic.h"
 
 extern char _kernel_start[], _kernel_end[];
@@ -85,5 +86,6 @@ void kmain(oc_boot_info_t *bi)
     kprintf("\nИнициализация завершена за %llu мс.\n",
             (unsigned long long)pit_uptime_ms());
 
-    shell_run(bi);
+    gui_run();          /* сразу рабочий стол — как в Windows! */
+    shell_run(bi);      /* выход из стола (Esc) — обычный шелл */
 }
