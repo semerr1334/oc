@@ -125,10 +125,10 @@ $(BUILD)/stage2.bin: $(BUILD)/stage2.o
 # ---------- образ ----------
 
 # UEFI-загрузчик (ваш ноутбук грузится именно так; нужен ziglang в .pydeps)
-$(BUILD)/BOOTX64.EFI: boot/efi.c include/boot.h include/layout.h
+$(BUILD)/BOOTX64.EFI: boot/efi.c include/boot.h include/layout.h kernel/src/font8x16.c kernel/include/font.h kernel/include/types.h
 	PYTHONPATH=.pydeps $(PYTHON) -m ziglang cc -target x86_64-windows-gnu -O2 \
 	    -ffreestanding -fno-stack-protector -fno-builtin -mno-stack-arg-probe \
-	    -Iinclude -Wl,--subsystem,efi_application boot/efi.c -o $@ -nostdlib
+	    -Iinclude -Ikernel/include -Wl,--subsystem,efi_application boot/efi.c kernel/src/font8x16.c -o $@ -nostdlib
 
 $(BUILD)/oc.img: $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(BUILD)/kernel.bin \
                  $(BUILD)/BOOTX64.EFI scripts/mkimage.py

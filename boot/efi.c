@@ -166,7 +166,7 @@ static EFI_GUID g_loaded_image = {
 static EFI_GUID g_sfs = {
     0x964e5b22, 0x6459, 0x11d2,
     { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } };
-static EFI_GUID g_gop = {
+static EFI_GUID g_gop_proto = {
     0x9042a9de, 0x23dc, 0x4a38,
     { 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a } };
 
@@ -206,31 +206,197 @@ static void die(const uint16_t *s)
         ;
 }
 
-/* ---------------- загрузочное меню ---------------- */
+/* ---------------- загрузочное меню (графика GOP в стиле стола) ---------------- */
 
-#define ATTR_TITLE  0x0B        /* светло-голубой */
-#define ATTR_ITEM   0x0F        /* белый */
-#define ATTR_DIM    0x08        /* серый */
-#define ATTR_SEL    0x70        /* подсветка: чёрным по белому */
-#define ATTR_WARN   0x0E        /* жёлтый */
+extern const unsigned char font8x16[195][16];
 
-static void put_pad(const uint16_t *s, int width)
+static EFI_GOP *g_gop;
+static unsigned char *g_fb;
+static uint32_t g_pitch, g_w, g_h;
+static int g_bgr;
+
+static void gfx_px(uint32_t x, uint32_t y, uint32_t r, uint32_t g, uint32_t b)
 {
-    const uint16_t *p = s;
-    int n = 0;
-    while (*p++)
-        n++;
-    prints(s);
-    for (int i = n; i < width; i++)
-        prints(L" ");
-    prints(L"\r\n");
+    if (x >= g_w || y >= g_h)
+        return;
+    volatile unsigned char *p = g_fb + ((uint64_t)y * g_pitch + x) * 4;
+    if (g_bgr) { p[0] = (unsigned char)b; p[1] = (unsigned char)g; p[2] = (unsigned char)r; }
+    else       { p[0] = (unsigned char)r; p[1] = (unsigned char)g; p[2] = (unsigned char)b; }
+}
+
+static void gfx_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                     uint32_t r, uint32_t g, uint32_t b)
+{
+    if (x >= g_w || y >= g_h || !w || !h)
+        return;
+    if ((uint64_t)x + w > g_w) w = g_w - x;
+    if ((uint64_t)y + h > g_h) h = g_h - y;
+    for (uint32_t yy = 0; yy < h; yy++)
+        for (uint32_t xx = 0; xx < w; xx++)
+            gfx_px(x + xx, y + yy, r, g, b);
+}
+
+static void gfx_frame(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                      uint32_t r, uint32_t g, uint32_t b)
+{
+    gfx_rect(x, y, w, 1, r, g, b);
+    gfx_rect(x, y + h - 1, w, 1, r, g, b);
+    gfx_rect(x, y, 1, h, r, g, b);
+    gfx_rect(x + w - 1, y, 1, h, r, g, b);
+}
+
+static uint8_t enc16(uint16_t cp)
+{
+    if (cp < 0x80) return (uint8_t)cp;
+    if (cp == 0x401) return 0xC0;
+    if (cp == 0x451) return 0xC1;
+    if (cp == 0x2116) return 0xC2;
+    if (cp >= 0x410 && cp <= 0x42F) return (uint8_t)(0x80 + (cp - 0x410));
+    if (cp >= 0x430 && cp <= 0x44F) return (uint8_t)(0xA0 + (cp - 0x430));
+    return 0;
+}
+
+static uint32_t gfx_str_w(const uint16_t *s, uint32_t sc)
+{
+    uint32_t n = 0;
+    while (*s++) n++;
+    return n * 8 * sc;
+}
+
+static void gfx_str(uint32_t x, uint32_t y, const uint16_t *s,
+                    uint32_t r, uint32_t g, uint32_t b, uint32_t sc)
+{
+    while (*s) {
+        uint8_t code = enc16(*s++);
+        const unsigned char *gl = font8x16[code ? code : '?'];
+        for (uint32_t row = 0; row < 16; row++)
+            for (uint32_t col = 0; col < 8; col++)
+                if (gl[row] & (0x80 >> col))
+                    gfx_rect(x + col * sc, y + row * sc, sc, sc, r, g, b);
+        x += 8 * sc;
+    }
+}
+
+static void gfx_str_cx(uint32_t cx, uint32_t y, const uint16_t *s,
+                       uint32_t r, uint32_t g, uint32_t b, uint32_t sc)
+{
+    uint32_t w = gfx_str_w(s, sc);
+    gfx_str(cx > w / 2 ? cx - w / 2 : 0, y, s, r, g, b, sc);
+}
+
+static int gfx_init(void)
+{
+    EFI_BOOT_SERVICES *bs = g_st->bs;
+    EFI_GOPINFO *fi;
+    if (bs->LocateProtocol(&g_gop_proto, 0, (void **)&g_gop) || !g_gop)
+        return 0;
+    fi = g_gop->mode ? g_gop->mode->info : 0;
+    if (!fi || !g_gop->mode->fb_base || !fi->w || !fi->h || !fi->stride)
+        return 0;
+    g_fb = (unsigned char *)g_gop->mode->fb_base;
+    g_pitch = fi->stride;
+    g_w = fi->w;
+    g_h = fi->h;
+    g_bgr = (fi->fmt == 1);
+    return 1;
 }
 
 /* рамка + логотип + пункты; sel = 0..1 — подсвеченный пункт */
 static void menu_draw(int sel)
 {
-    EFI_TXT *o = g_st->cout;
+    uint32_t cx = g_w / 2;
 
+    /* обои: градиент как на рабочем столе */
+    for (uint32_t i = 0; i < 24; i++)
+        gfx_rect(0, i * (g_h / 24), g_w, g_h / 24 + 1,
+                 (uint32_t)(12 + i), (uint32_t)(28 + i * 2), (uint32_t)(64 + i * 3));
+
+    /* логотип OC */
+    gfx_str_cx(cx, 40, L"O C", 150, 190, 255, 7);
+    gfx_str_cx(cx, 40 + 16 * 7 + 6, L"\x0414\x0432\x0443\x0445\x0441\x043E\x0442\x043C\x0435\x0442\x0440\x043E\x0432\x043A\x0430 - \x0432\x0430\x0448\x0430 \x0441\x0438\x0441\x0442\x0435\x043C\x0430",
+               170, 185, 220, 2);
+
+    /* карточки-пункты в стиле окон */
+    uint32_t bw = g_w > 700 ? 640 : g_w - 40;
+    uint32_t bx = cx - bw / 2;
+    uint32_t by = 260;
+    for (int i = 0; i < 2; i++) {
+        uint32_t y = by + (uint32_t)i * 96;
+        uint32_t rr = (i == (uint32_t)sel) ? 255 : 40, gg = (i == sel) ? 210 : 90,
+                 bb = (i == sel) ? 60 : 180;
+        /* заголовок-полоска */
+        gfx_rect(bx, y, bw, 24, 40, 90, 180);
+        gfx_rect(bx + 4, y + 3, 30, 18, i == sel ? 255 : 205, i == sel ? 210 : 210,
+                 i == sel ? 60 : 220);
+        gfx_str(bx + 12, y + 5, (i == 0) ? L"1" : L"2", 20, 20, 30, 1);
+        gfx_str(bx + 44, y + 5,
+                (i == 0) ? L"\x0417\x0430\x043F\x0443\x0441\x043A OC - \x0440\x0430\x0431\x043E\x0447\x0438\x0439 \x0441\x0442\x043E\x043B"
+                         : L"Windows - \x043E\x0441\x043D\x043E\x0432\x043D\x0430\x044F \x0441\x0438\x0441\x0442\x0435\x043C\x0430",
+                255, 255, 255, 1);
+        /* тело */
+        gfx_rect(bx + 2, y + 26, bw - 4, 44, 235, 235, 235);
+        gfx_str(bx + 16, y + 40,
+                (i == 0) ? L"\x0413\x0440\x0430\x0444\x0438\x0447\x0435\x0441\x043A\x0430\x044F \x043E\x0431\x043E\x043B\x043E\x0447\x043A\x0430, \x043F\x0440\x043E\x0433\x0440\x0430\x043C\x043C\x044B, \x0438\x0433\x0440\x044B"
+                         : L"\x0412\x0430\x0448\x0430 \x043F\x0440\x043E\x0448\x043B\x0430\x044F \x0441\x0438\x0441\x0442\x0435\x043C\x0430 - \x0432\x0441\x0451 \x043D\x0430 \x043C\x0435\x0441\x0442\x0435",
+                20, 20, 30, 1);
+        gfx_frame(bx, y, bw, 72, rr, gg, bb);
+        if (i == sel)
+            gfx_frame(bx - 2, y - 2, bw + 4, 76, 255, 210, 60);
+    }
+
+    /* подсказка */
+    gfx_str_cx(cx, g_h - 56,
+               L"\x0421\x0442\x0440\x0435\x043B\x043A\x0438 - \x0432\x044B\x0431\x043E\x0440    Enter - \x0437\x0430\x043F\x0443\x0441\x043A    1/2 - \x0441\x0440\x0430\x0437\x0443",
+               150, 165, 200, 1);
+}
+
+/* строка статуса: отсчёт (sec>0) или подсказка (sec<=0) */
+static void menu_status(int sec)
+{
+    uint32_t cx = g_w / 2;
+    /* чистим нижнюю зону */
+    gfx_rect(0, g_h - 40, g_w, 40, 16, 34, 72);
+    if (sec > 0) {
+        uint16_t line[64];
+        /* «Автозагрузка OC через N с» */
+        const uint16_t *p = L"\x0410\x0432\x0442\x043E\x0437\x0430\x043F\x0443\x0441\x043A OC \x0447\x0435\x0440\x0435\x0437  ";
+        int n = 0;
+        while (*p) line[n++] = *p++;
+        line[n++] = (uint16_t)('0' + sec);
+        p = L" \x0441\x0435\x043A";
+        while (*p) line[n++] = *p++;
+        line[n] = 0;
+        gfx_str_cx(cx, g_h - 34, line, 200, 210, 230, 1);
+        /* полоска-таймер */
+        uint32_t bw = 300;
+        gfx_rect(cx - bw / 2, g_h - 14, bw, 8, 40, 50, 70);
+        gfx_rect(cx - bw / 2, g_h - 14, (uint32_t)sec * bw / 5, 8, 50, 140, 80);
+    } else {
+        gfx_str_cx(cx, g_h - 34,
+                   L"\x0412\x044B\x0431\x043E\x0440 \x043E\x0441\x0442\x0430\x043B\x0441\x044F \x0437\x0430 \x0432\x0430\x043C\x0438: \x043D\x0430\x0436\x043C\x0438\x0442\x0435 1 \x0438\x043B\x0438 2",
+                   200, 210, 230, 1);
+    }
+}
+
+/* ---------- текстовый запасной вариант (нет GOP) ---------- */
+#define ATTR_TITLE  0x0B
+#define ATTR_ITEM   0x0F
+#define ATTR_DIM    0x08
+#define ATTR_SEL    0x70
+
+static void put_pad(const uint16_t *s, int width)
+{
+    const uint16_t *p = s;
+    int n = 0;
+    while (*p++) n++;
+    prints(s);
+    for (int i = n; i < width; i++) prints(L" ");
+    prints(L"\r\n");
+}
+
+static void menu_draw_text(int sel)
+{
+    EFI_TXT *o = g_st->cout;
     o->SetCursorPosition(o, 0, 0);
     o->SetAttribute(o, ATTR_DIM);
     put_pad(L"  ==================================================", 52);
@@ -244,9 +410,8 @@ static void menu_draw(int sel)
     o->SetAttribute(o, ATTR_DIM);
     put_pad(L"  ==================================================", 52);
     o->SetAttribute(o, ATTR_ITEM);
-    put_pad(L"   OC OS 0.1 \xAB\x0414\x0432\x0443\x0445\x0441\x043E\x0442\x043C\x0435\x0442\x0440\x043E\x0432\x043A\x0430\xBB \x2014 \x0432\x0430\x0448\x0430 \x0441\x0438\x0441\x0442\x0435\x043C\x0430", 52);
+    put_pad(L"   OC v0.3 \xAB\x0414\x0432\x0443\x0445\x0441\x043E\x0442\x043C\x0435\x0442\x0440\x043E\x0432\x043A\x0430\xBB \x2014 \x0432\x0430\x0448\x0430 \x0441\x0438\x0441\x0442\x0435\x043C\x0430", 52);
     put_pad(L"", 52);
-
     o->SetAttribute(o, sel == 0 ? ATTR_SEL : ATTR_ITEM);
     put_pad(sel == 0
         ? L"  > [1] \x0417\x0430\x043F\x0443\x0441\x0442\x0438\x0442\x044C OC                 (Enter)"
@@ -258,8 +423,7 @@ static void menu_draw(int sel)
     put_pad(L"", 52);
 }
 
-/* строка статуса: отсчёт (sec>0) или подсказка (sec<=0) */
-static void menu_status(int sec)
+static void menu_status_text(int sec)
 {
     EFI_TXT *o = g_st->cout;
     o->SetAttribute(o, ATTR_DIM);
@@ -275,18 +439,29 @@ static void menu_status(int sec)
     o->SetAttribute(o, ATTR_ITEM);
 }
 
+static int g_gfx_ok;
+
+static void menu_redraw(int sel)
+{
+    if (g_gfx_ok) menu_draw(sel); else menu_draw_text(sel);
+}
+static void menu_status_any(int sec)
+{
+    if (g_gfx_ok) menu_status(sec); else menu_status_text(sec);
+}
+
 /* клавиши: стрелки (UEFI scancodes 0x01/0x02), Enter, 1/2, Esc.
  * возвращает 1 = OC, 2 = Windows, 0 = остаёмся в меню */
 static int menu_onkey(EFI_INPUT_KEY *key, int *sel)
 {
     if (key->scancode == 0x01) {            /* Up */
         *sel = 0;
-        menu_draw(*sel);
+        menu_redraw(*sel);
         return 0;
     }
     if (key->scancode == 0x02) {            /* Down */
         *sel = 1;
-        menu_draw(*sel);
+        menu_redraw(*sel);
         return 0;
     }
     if (key->unicode == '1')
@@ -310,9 +485,11 @@ static int boot_menu(void)
     int ticks = 50;                         /* 50 x 100 мс = 5 с; <0 — стоп */
     int last_sec = -2;
 
-    g_st->cout->ClearScreen(g_st->cout);
-    menu_draw(sel);
-    menu_status(5);
+    g_gfx_ok = gfx_init();
+    if (!g_gfx_ok)
+        g_st->cout->ClearScreen(g_st->cout);
+    menu_redraw(sel);
+    menu_status_any(5);
     last_sec = 5;
 
     for (;;) {
@@ -323,7 +500,7 @@ static int boot_menu(void)
             ticks = -1;                     /* любая клавиша — отсчёт стоп */
             if (last_sec != -1) {
                 last_sec = -1;
-                menu_status(0);
+                menu_status_any(0);
             }
             continue;
         }
@@ -332,7 +509,7 @@ static int boot_menu(void)
             int sec = (ticks + 9) / 10;
             if (sec > 0 && sec != last_sec) {
                 last_sec = sec;
-                menu_status(sec);           /* цифра в той же ячейке */
+                menu_status_any(sec);
             }
             if (!ticks)
                 return 1;                   /* время вышло — грузим OC */
