@@ -1,0 +1,13 @@
+# build artifacts
+build/
+*.o
+*.bin
+*.elf
+*.map
+*.img
+*.iso
+__pycache__/
+*.pyc
+.venv/
+.pydeps/
+installer/oc_img.h
